@@ -1,0 +1,32 @@
+[build]
+  publish = "."
+
+# Edge function routes
+[[edge_functions]]
+  path     = "/data"
+  function = "data"
+  cache    = "manual"  # Opt-in to caching
+
+[[edge_functions]]
+  path     = "/data.json"
+  function = "data"
+  cache    = "manual"  # Ensure this route is same as above
+
+# Optionally keep /data.html if needed
+[[edge_functions]]
+  path     = "/data.html"
+  function = "data-page"
+  cache    = "manual"
+
+# Prevent SPA fallback from overriding our data.json
+[[redirects]]
+  from   = "/data.json"
+  to     = "/data.json"
+  status = 200
+  force  = true
+
+# Your SPA fallback redirect (adjust as needed)
+[[redirects]]
+  from   = "/*"
+  to     = "/index.html"
+  status = 200
