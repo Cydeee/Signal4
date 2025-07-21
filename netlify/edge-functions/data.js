@@ -240,44 +240,39 @@ async function buildDashboardData() {
     result.errors.push(`D: ${e.message}`);
   }
 
-/* ------------------------------------------------------------------ */
-/* BLOCK E – liquidations (Coinglass, 5-minute buckets)               */
-/* ------------------------------------------------------------------ */
+/* BLOCK E – liquidations via Bybit v5 (no key) */
 try {
-  const CG_KEY = Deno.env.get("COINGLASS_KEY");
-  if (!CG_KEY) throw new Error("COINGLASS_KEY env-var is missing");
-
-  const url =
-    "https://open-api.coinglass.com/public/v2/liquidation" +
-    "?symbol=BTC&type=futures&time_interval=5m";
-
-  const resp = await fetch(url, {
-    headers: {
-      coinglassSecret: CG_KEY,
-      accept: "application/json"
-    }
-  });
+  const resp = await fetch(
+    "https://api.bybit.com/v5/market/liquidation" +
+    "?category=linear&symbol=BTCUSDT&limit=1000"
+  );
   if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-
   const body = await resp.json();
-  if (body.code !== 0 || !Array.isArray(body.data))
-    throw new Error(`Coinglass error code ${body.code}`);
+  if (body.retCode !== 0) throw new Error(`Bybit code ${body.retCode}`);
 
-  const buckets = body.data;
-  const slice1h = buckets.slice(-12);   // 12×5m = 1 h
-  const slice4h = buckets.slice(-48);   // 48×5m = 4 h
-  const sum = (arr) => arr.reduce((s, b) => s + (+b.vol_usd || 0), 0);
+  const rows = body.result.list;              // array of {price,size,side,ts}
+  // Keep only last 24 h (timestamp in ms)
+  const now = Date.now();
+  const filt = rows.filter(r => now - +r.ts <= 24*3600e3);
 
-  const usd1h = sum(slice1h);
-  const usd4h = sum(slice4h);
+  // Bin into 5-minute buckets
+  const bucketed = {};
+  for (const r of filt) {
+    const key = Math.floor(+r.ts / 300e3);            // 5-min epoch
+    bucketed[key] = (bucketed[key] || 0) + +r.size;
+  }
+  const series = Object.values(bucketed).sort((a,b)=>b-a);
+  const usd1h = series.slice(0,12).reduce((s,x)=>s+x,0);   // 12×5m
+  const usd4h = series.slice(0,48).reduce((s,x)=>s+x,0);
 
   result.dataE = {
-    usd1h: +usd1h.toFixed(0),
-    usd4h: +usd4h.toFixed(0),
-    spike: usd1h > 1.5 * (usd4h / 4),
+    usd1h:  +usd1h.toFixed(0),
+    usd4h:  +usd4h.toFixed(0),
+    spike:  usd1h > 1.5 * (usd4h / 4),
+    source: "bybit"
   };
 } catch (e) {
-  result.dataE = null;                  // keep schema consistent
+  result.dataE = null;
   result.errors.push("E-liq: " + e.message);
 }
 
