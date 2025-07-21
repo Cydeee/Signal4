@@ -331,18 +331,21 @@ async function buildDashboardData() {
   }
 
   /* ------------------------------------------------------------------ */
-  /* BLOCK H – macro dominance ---------------------------------------- */
-  /* ------------------------------------------------------------------ */
-  try {
-    const gv = await safeJson(`https://api.coingecko.com/api/v3/global`);
-    const gd = gv.data;
-    result.dataH = {
-      btcDominance: +gd.market_cap_percentage.btc.toFixed(2),
-      ethDominance: +gd.market_cap_percentage.eth.toFixed(2),
-    };
-  } catch (e) {
-    result.errors.push("H: " + e.message);
-  }
+/* BLOCK H – macro dominance & total market cap ---------------------- */
+/* ------------------------------------------------------------------ */
+try {
+  const gv = await safeJson("https://api.coingecko.com/api/v3/global");
+  const gd = gv.data;
+
+  result.dataH = {
+    totalMcapT : +((gd.total_market_cap.usd) / 1e12).toFixed(2),      // in trillions USD
+    mcap24hPct : +gd.market_cap_change_percentage_24h_usd.toFixed(2),// daily %
+    btcDominance : +gd.market_cap_percentage.btc.toFixed(2),
+    ethDominance : +gd.market_cap_percentage.eth.toFixed(2)
+  };
+} catch (e) {
+  result.errors.push("H: " + e.message);
+}
 
   return result;
 }
