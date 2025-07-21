@@ -1,5 +1,5 @@
 // netlify/edge-functions/data.js
-// Lean build + ROC10/20 + Liquidations + Market Structure
+// lean build + ROC10/20 + CryptoMeter liquidations + market structure
 export const config = {
   path: ["/data", "/data.json"],
   cache: "manual",
@@ -56,7 +56,7 @@ export default async function handler(request) {
 /*                       data-building logic                            */
 /* -------------------------------------------------------------------- */
 async function buildDashboardData() {
-  const SYMBOL = "BTCUSDT";   // change BTC to any top-20 coin ticker
+  const SYMBOL = "BTCUSDT";              // change BTC → any top-20 coin
   const LIMIT  = 250;
 
   const result = {
@@ -64,7 +64,7 @@ async function buildDashboardData() {
     dataB: {},   // ROC10 / ROC20
     dataC: {},   // volume delta
     dataD: null, // derivatives
-    dataE: null, // liquidations
+    dataE: null, // liquidations (CryptoMeter)
     dataF: null, // market structure
     dataG: null, // sentiment
     dataH: null, // macro dominance
@@ -72,18 +72,13 @@ async function buildDashboardData() {
   };
 
   /* ---------------------- helpers ----------------------------------- */
-  const safeJson = async (u, opt={}) => {
+  const safeJson = async (u, opt = {}) => {
     const r = await fetch(u, opt);
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     return await r.json();
   };
 
   const sma = (a, p) => a.slice(-p).reduce((s, x) => s + x, 0) / p;
-
-  const std = (a, p) => {
-    const m = sma(a, p);
-    return Math.sqrt(a.slice(-p).reduce((t, x) => t + (x - m) ** 2, 0) / p);
-  };
 
   const ema = (a, p) => {
     if (a.length < p) return 0;
@@ -95,12 +90,14 @@ async function buildDashboardData() {
 
   const rsi = (a, p) => {
     if (a.length < p + 1) return 0;
-    let up = 0, dn = 0;
+    let up = 0,
+      dn = 0;
     for (let i = 1; i <= p; i++) {
       const d = a[i] - a[i - 1];
       d >= 0 ? (up += d) : (dn -= d);
     }
-    let avgUp = up / p, avgDn = dn / p;
+    let avgUp = up / p,
+      avgDn = dn / p;
     for (let i = p + 1; i < a.length; i++) {
       const d = a[i] - a[i - 1];
       avgUp = (avgUp * (p - 1) + Math.max(d, 0)) / p;
@@ -113,15 +110,19 @@ async function buildDashboardData() {
     if (h.length < p + 1) return 0;
     const tr = [];
     for (let i = 1; i < h.length; i++)
-      tr.push(Math.max(h[i] - l[i],
-                       Math.abs(h[i] - c[i - 1]),
-                       Math.abs(l[i] - c[i - 1])));
+      tr.push(
+        Math.max(h[i] - l[i], Math.abs(h[i] - c[i - 1]), Math.abs(l[i] - c[i - 1]))
+      );
     return sma(tr, p);
   };
 
-  const roc = (a, n) => (a.length >= n + 1)
-      ? ((a.at(-1) - a.at(-(n + 1))) / a.at(-(n + 1))) * 100
-      : 0;
+  const std = (a, p) => {
+    const m = sma(a.slice(-p), p);
+    return Math.sqrt(a.slice(-p).reduce((t, x) => t + (x - m) ** 2, 0) / p);
+  };
+
+  const roc = (a, n) =>
+    a.length >= n + 1 ? ((a.at(-1) - a.at(-(n + 1))) / a.at(-(n + 1))) * 100 : 0;
 
   /* ------------------------------------------------------------------ */
   /* BLOCK A – trend / momentum / volatility -------------------------- */
@@ -131,15 +132,14 @@ async function buildDashboardData() {
       const kl = await safeJson(
         `https://api.binance.com/api/v3/klines?symbol=${SYMBOL}&interval=${tf}&limit=${LIMIT}`
       );
-      const closes = kl.map(r => +r[4]);
-      const highs  = kl.map(r => +r[2]);
-      const lows   = kl.map(r => +r[3]);
+      const closes = kl.map((r) => +r[4]);
+      const highs = kl.map((r) => +r[2]);
+      const lows = kl.map((r) => +r[3]);
 
-      const last   = closes.at(-1) || 1;
-      const ema50  = ema(closes, 50);
+      const last = closes.at(-1) || 1;
+      const ema50 = ema(closes, 50);
       const ema200 = ema(closes, 200);
 
-      /* MACD histogram */
       const macdArr = [];
       for (let i = 0; i < closes.length; i++) {
         const sub = closes.slice(0, i + 1);
@@ -167,7 +167,7 @@ async function buildDashboardData() {
       const kl = await safeJson(
         `https://api.binance.com/api/v3/klines?symbol=${SYMBOL}&interval=${tf}&limit=21`
       );
-      const closes = kl.map(r => +r[4]);
+      const closes = kl.map((r) => +r[4]);
       result.dataB[tf] = {
         roc10: +roc(closes, 10).toFixed(2),
         roc20: +roc(closes, 20).toFixed(2),
@@ -188,7 +188,8 @@ async function buildDashboardData() {
     const windows = { "15m": 0.25, "1h": 1, "4h": 4, "24h": 24 };
     for (const [lbl, hrs] of Object.entries(windows)) {
       const cutoff = now - hrs * 3600000;
-      let bull = 0, bear = 0;
+      let bull = 0,
+        bear = 0;
       for (const k of kl) {
         if (+k[0] < cutoff) continue;
         +k[4] >= +k[1] ? (bull += +k[5]) : (bear += +k[5]);
@@ -200,7 +201,7 @@ async function buildDashboardData() {
       };
     }
     const tot24 = result.dataC["24h"].totalVol;
-    const base  = { "15m": tot24 / 96, "1h": tot24 / 24, "4h": tot24 / 6 };
+    const base = { "15m": tot24 / 96, "1h": tot24 / 24, "4h": tot24 / 6 };
     result.dataC.relative = {};
     for (const lbl of ["15m", "1h", "4h"]) {
       const r = result.dataC[lbl].totalVol / Math.max(base[lbl], 1);
@@ -218,9 +219,9 @@ async function buildDashboardData() {
     const fr = await safeJson(
       `https://fapi.binance.com/fapi/v1/fundingRate?symbol=${SYMBOL}&limit=1000`
     );
-    const rates = fr.slice(-42).map(d => +d.fundingRate);
-    const mean  = rates.reduce((s, x) => s + x, 0) / rates.length;
-    const sd    = Math.sqrt(rates.reduce((s, x) => s + (x - mean) ** 2, 0) / rates.length);
+    const rates = fr.slice(-42).map((d) => +d.fundingRate);
+    const mean = rates.reduce((s, x) => s + x, 0) / rates.length;
+    const sd = Math.sqrt(rates.reduce((s, x) => s + (x - mean) ** 2, 0) / rates.length);
     const fundingZ = sd ? ((rates.at(-1) - mean) / sd).toFixed(2) : "0.00";
 
     const oiNow = await safeJson(
@@ -231,7 +232,8 @@ async function buildDashboardData() {
     );
     const pct24h = (
       ((+oiNow.openInterest - +oiHistArr[0].sumOpenInterest) /
-        +oiHistArr[0].sumOpenInterest) * 100
+        +oiHistArr[0].sumOpenInterest) *
+      100
     ).toFixed(1);
 
     result.dataD = { fundingZ, oiDelta24h: pct24h };
@@ -240,87 +242,83 @@ async function buildDashboardData() {
     result.errors.push(`D: ${e.message}`);
   }
 
-/* BLOCK E – liquidations via Bybit v5 (no key) */
-try {
-  const resp = await fetch(
-    "https://api.bybit.com/v5/market/liquidation" +
-    "?category=linear&symbol=BTCUSDT&limit=1000"
-  );
-  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-  const body = await resp.json();
-  if (body.retCode !== 0) throw new Error(`Bybit code ${body.retCode}`);
+  /* ------------------------------------------------------------------ */
+  /* BLOCK E – liquidations via CryptoMeter --------------------------- */
+  /* ------------------------------------------------------------------ */
+  try {
+    const CM_KEY =
+      Deno.env.get("CRYPTOMETER_KEY") ||
+      "uBTYkSj3sDjsy1oSo3j52zg0D8614l7pLzpzTiFg";
+    if (!CM_KEY) throw new Error("CRYPTOMETER_KEY env-var missing");
 
-  const rows = body.result.list;              // array of {price,size,side,ts}
-  // Keep only last 24 h (timestamp in ms)
-  const now = Date.now();
-  const filt = rows.filter(r => now - +r.ts <= 24*3600e3);
+    const cmUrl = `https://api.cryptometer.io/liquidation-data-v2/?symbol=btc&api_key=${CM_KEY}`;
+    const body = await safeJson(cmUrl);
+    if (!body.success || !Array.isArray(body.data))
+      throw new Error("bad shape");
 
-  // Bin into 5-minute buckets
-  const bucketed = {};
-  for (const r of filt) {
-    const key = Math.floor(+r.ts / 300e3);            // 5-min epoch
-    bucketed[key] = (bucketed[key] || 0) + +r.size;
+    const row = body.data[0]; // exchanges object
+    const sum = (side) =>
+      Object.values(row).reduce((s, ex) => s + (+ex[side] || 0), 0);
+
+    const longs = sum("longs");
+    const shorts = sum("shorts");
+    const total = longs + shorts;
+
+    result.dataE = {
+      longs: +longs.toFixed(0),
+      shorts: +shorts.toFixed(0),
+      total24h: +total.toFixed(0),
+      bias: longs > shorts ? "long-wipe" : "short-wipe",
+      source: "cryptometer",
+    };
+  } catch (e) {
+    result.dataE = null;
+    result.errors.push("E-liq: " + e.message);
   }
-  const series = Object.values(bucketed).sort((a,b)=>b-a);
-  const usd1h = series.slice(0,12).reduce((s,x)=>s+x,0);   // 12×5m
-  const usd4h = series.slice(0,48).reduce((s,x)=>s+x,0);
-
-  result.dataE = {
-    usd1h:  +usd1h.toFixed(0),
-    usd4h:  +usd4h.toFixed(0),
-    spike:  usd1h > 1.5 * (usd4h / 4),
-    source: "bybit"
-  };
-} catch (e) {
-  result.dataE = null;
-  result.errors.push("E-liq: " + e.message);
-}
 
   /* ------------------------------------------------------------------ */
   /* BLOCK F – market structure --------------------------------------- */
   /* ------------------------------------------------------------------ */
   try {
-    /* Daily pivots */
     const dayK = await safeJson(
       `https://api.binance.com/api/v3/klines?symbol=${SYMBOL}&interval=1d&limit=2`
     );
     const [yHi, yLo, yCl] = [+dayK[0][2], +dayK[0][3], +dayK[0][4]];
-    const P  = (yHi + yLo + yCl) / 3;
+    const P = (yHi + yLo + yCl) / 3;
     const R1 = 2 * P - yLo;
     const S1 = 2 * P - yHi;
 
-    /* Session VWAP ± 1 σ */
     const min1 = await safeJson(
       `https://api.binance.com/api/v3/klines?symbol=${SYMBOL}&interval=1m&limit=1500`
     );
-    const todayUTC0 = new Date(Date.UTC(
-      new Date().getUTCFullYear(),
-      new Date().getUTCMonth(),
-      new Date().getUTCDate()
-    )).getTime();
-    let pv = 0, vol = 0, prices = [];
+    const todayUTC0 = new Date(
+      Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate())
+    ).getTime();
+    let pv = 0,
+      vol = 0,
+      prices = [];
     for (const k of min1) {
       if (+k[0] < todayUTC0) continue;
       const tp = (+k[2] + +k[3] + +k[4]) / 3;
-      const v  = +k[5];
-      pv += tp * v; vol += v;
+      const v = +k[5];
+      pv += tp * v;
+      vol += v;
       prices.push(tp);
     }
     const vwap = pv / vol;
-    const sd   = Math.sqrt(prices.reduce((s,x)=>s+(x-vwap)**2,0)/prices.length);
+    const sd = Math.sqrt(prices.reduce((s, x) => s + (x - vwap) ** 2, 0) / prices.length);
 
-    /* HH/LL 20 on 15-minute TF */
     const kl20 = await safeJson(
       `https://api.binance.com/api/v3/klines?symbol=${SYMBOL}&interval=15m&limit=20`
     );
-    const closes20 = kl20.map(r => +r[4]);
+    const closes20 = kl20.map((r) => +r[4]);
     const HH20 = Math.max(...closes20);
     const LL20 = Math.min(...closes20);
 
     result.dataF = {
-      pivot: { P:+P.toFixed(2), R1:+R1.toFixed(2), S1:+S1.toFixed(2) },
-      vwap:  { value:+vwap.toFixed(2), band:+sd.toFixed(2) },
-      hhll20:{ HH:+HH20.toFixed(2), LL:+LL20.toFixed(2) },
+      pivot: { P: +P.toFixed(2), R1: +R1.toFixed(2), S1: +S1.toFixed(2) },
+      vwap: { value: +vwap.toFixed(2), band: +sd.toFixed(2) },
+      hhll20: { HH: +HH20.toFixed(2), LL: +LL20.toFixed(2) },
     };
   } catch (e) {
     result.errors.push("F: " + e.message);
@@ -333,9 +331,7 @@ try {
     const fg = await safeJson(`https://api.alternative.me/fng/?limit=1`);
     const fgd = fg.data?.[0];
     if (!fgd) throw new Error("FNG missing");
-    result.dataG = {
-      fearGreed: `${fgd.value} · ${fgd.value_classification}`,
-    };
+    result.dataG = { fearGreed: `${fgd.value} · ${fgd.value_classification}` };
   } catch (e) {
     result.errors.push("G: " + e.message);
   }
