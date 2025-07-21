@@ -1,5 +1,5 @@
 // netlify/edge-functions/data.js
-// lean build + ROC10/20 + CryptoMeter liquidations + market structure
+// Lean build + ROC10/20 + Synthetic Stress + Market Structure
 export const config = {
   path: ["/data", "/data.json"],
   cache: "manual",
@@ -56,30 +56,29 @@ export default async function handler(request) {
 /*                       data-building logic                            */
 /* -------------------------------------------------------------------- */
 async function buildDashboardData() {
-  const SYMBOL = "BTCUSDT";              // change BTC → any top-20 coin
+  const SYMBOL = "BTCUSDT";     // change BTC → any top-20 coin ticker
   const LIMIT  = 250;
 
   const result = {
     dataA: {},   // indicators
-    dataB: {},   // ROC10 / ROC20
-    dataC: {},   // volume delta
+    dataB: {},   // ROC10 / 20
+    dataC: {},   // bull/bear volume delta
     dataD: null, // derivatives
-    dataE: null, // liquidations (CryptoMeter)
+    dataE: null, // synthetic liquidation stress
     dataF: null, // market structure
     dataG: null, // sentiment
     dataH: null, // macro dominance
     errors: [],
   };
 
-  /* ---------------------- helpers ----------------------------------- */
-  const safeJson = async (u, opt = {}) => {
-    const r = await fetch(u, opt);
+  /* ---------------- helper math ------------------------------------ */
+  const safeJson = async (u) => {
+    const r = await fetch(u);
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     return await r.json();
   };
 
   const sma = (a, p) => a.slice(-p).reduce((s, x) => s + x, 0) / p;
-
   const ema = (a, p) => {
     if (a.length < p) return 0;
     const k = 2 / (p + 1);
@@ -87,7 +86,6 @@ async function buildDashboardData() {
     for (let i = p; i < a.length; i++) e = a[i] * k + e * (1 - k);
     return e;
   };
-
   const rsi = (a, p) => {
     if (a.length < p + 1) return 0;
     let up = 0,
@@ -105,7 +103,6 @@ async function buildDashboardData() {
     }
     return avgDn ? 100 - 100 / (1 + avgUp / avgDn) : 100;
   };
-
   const atr = (h, l, c, p) => {
     if (h.length < p + 1) return 0;
     const tr = [];
@@ -115,12 +112,6 @@ async function buildDashboardData() {
       );
     return sma(tr, p);
   };
-
-  const std = (a, p) => {
-    const m = sma(a.slice(-p), p);
-    return Math.sqrt(a.slice(-p).reduce((t, x) => t + (x - m) ** 2, 0) / p);
-  };
-
   const roc = (a, n) =>
     a.length >= n + 1 ? ((a.at(-1) - a.at(-(n + 1))) / a.at(-(n + 1))) * 100 : 0;
 
@@ -243,35 +234,34 @@ async function buildDashboardData() {
   }
 
   /* ------------------------------------------------------------------ */
-/* BLOCK E – liquidations via Bybit v5 (no API key needed)            */
-/* ------------------------------------------------------------------ */
-try {
-  const url =
-    "https://api.bybit.com/v5/market/liquidation" +
-    "?category=linear&symbol=BTCUSDT&limit=1000";
+  /* BLOCK E – synthetic liquidation-stress index --------------------- */
+  /* ------------------------------------------------------------------ */
+  try {
+    /* 1️⃣ crowded bias via funding z-score */
+    const biasScore = Math.min(3, Math.abs(+result.dataD.fundingZ || 0));
 
-  const body = await safeJson(url);
-  if (body.retCode !== 0 || !body.result?.list)
-    throw new Error(`Bybit code ${body.retCode}`);
+    /* 2️⃣ leverage inflow via 24 h OI change */
+    const levScore = Math.max(0, (+result.dataD.oiDelta24h || 0) / 5); // every +5 % = +1
 
-  const rows = body.result.list;              // array of forced orders
-  const now  = Date.now();
-  const inLast = (ms) => rows.filter(r => now - +r.ts <= ms);
+    /* 3️⃣ volume surge flag (15 m window) */
+    const volFlag = result.dataC.relative?.["15m"];
+    const volScore = volFlag === "very high" ? 2 : volFlag === "high" ? 1 : 0;
 
-  const usd1h = inLast(3600e3).reduce((s,r)=> s + (+r.size || 0), 0);
-  const usd4h = inLast(4*3600e3).reduce((s,r)=> s + (+r.size || 0), 0);
+    /* 4️⃣ divergence (optional, set to 0 until you cache hourly OI ROC) */
+    const divScore = 0;
 
-  result.dataE = {
-    usd1h : +usd1h.toFixed(0),
-    usd4h : +usd4h.toFixed(0),
-    spike : usd1h > 1.5 * (usd4h / 4),
-    source: "bybit"
-  };
-} catch (e) {
-  result.dataE = null;
-  result.errors.push("E-liq: " + e.message);
-}
+    const stress = biasScore + levScore + volScore + divScore;
 
+    result.dataE = {
+      stressIndex: +stress.toFixed(2),
+      highRisk: stress >= 5,      // tweak threshold as you back-test
+      components: { biasScore, levScore, volScore, divScore },
+      source: "synthetic",
+    };
+  } catch (e) {
+    result.dataE = null;
+    result.errors.push("E-synth: " + e.message);
+  }
 
   /* ------------------------------------------------------------------ */
   /* BLOCK F – market structure --------------------------------------- */
@@ -289,7 +279,11 @@ try {
       `https://api.binance.com/api/v3/klines?symbol=${SYMBOL}&interval=1m&limit=1500`
     );
     const todayUTC0 = new Date(
-      Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate())
+      Date.UTC(
+        new Date().getUTCFullYear(),
+        new Date().getUTCMonth(),
+        new Date().getUTCDate()
+      )
     ).getTime();
     let pv = 0,
       vol = 0,
@@ -303,7 +297,10 @@ try {
       prices.push(tp);
     }
     const vwap = pv / vol;
-    const sd = Math.sqrt(prices.reduce((s, x) => s + (x - vwap) ** 2, 0) / prices.length);
+    const sd =
+      prices.length > 1
+        ? Math.sqrt(prices.reduce((s, x) => s + (x - vwap) ** 2, 0) / prices.length)
+        : 0;
 
     const kl20 = await safeJson(
       `https://api.binance.com/api/v3/klines?symbol=${SYMBOL}&interval=15m&limit=20`
