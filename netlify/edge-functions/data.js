@@ -1,4 +1,4 @@
-// netlify/edge-functions/data.js – lean build (EMA / MACD hist / ATR / RSI) + ROC10/20
+// netlify/edge-functions/data.js – lean + ROC10/20 + market‑structure block
 
 export const config = {
   path: ["/data", "/data.json"],
@@ -35,9 +35,7 @@ export default async function handler(request) {
     }
 
     const html = `<!DOCTYPE html><html><body><pre id="dashboard-data">${JSON.stringify(
-      payload,
-      null,
-      2
+      payload
     )}</pre></body></html>`;
     return new Response(html, {
       headers: {
@@ -54,57 +52,58 @@ export default async function handler(request) {
   }
 }
 
-// ---------------------------------------------------------------------
-// buildDashboardData
-// ---------------------------------------------------------------------
+/* -------------------------------------------------------------------- */
+/*                       data‑building logic                            */
+/* -------------------------------------------------------------------- */
 async function buildDashboardData() {
-  const SYMBOL = "BTCUSDT"; // swap first segment for any top‑20 coin
+  const SYMBOL = "BTCUSDT"; // change first part for any top‑20 coin
   const LIMIT = 250;
 
   const result = {
-    dataA: {}, // trend / momentum / volatility
-    dataB: {}, // 10‑bar & 20‑bar ROC
-    dataC: {}, // volume delta
-    dataD: null, // derivatives positioning
-    dataE: null, // sentiment (Fear‑Greed)
-    dataF: null, // macro dominance
+    dataA: {},
+    dataB: {},
+    dataC: {},
+    dataD: null,
+    dataE: null, // NEW market‑structure block
+    dataF: null, // sentiment
+    dataG: null, // macro
     errors: [],
   };
 
-  /* --------------------------- helpers ------------------------------ */
+  /* ---------------------- helpers ----------------------------------- */
   const safeJson = async (u) => {
     const r = await fetch(u);
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    return r.json();
+    return await r.json();
   };
 
-  const sma = (arr, p) => arr.slice(-p).reduce((s, x) => s + x, 0) / p;
+  const sma = (a, p) => a.slice(-p).reduce((s, x) => s + x, 0) / p;
 
-  const std = (arr, p) => {
-    const m = sma(arr, p);
-    return Math.sqrt(arr.slice(-p).reduce((t, x) => t + (x - m) ** 2, 0) / p);
+  const std = (a, p) => {
+    const m = sma(a, p);
+    return Math.sqrt(a.slice(-p).reduce((t, x) => t + (x - m) ** 2, 0) / p);
   };
 
-  const ema = (arr, p) => {
-    if (arr.length < p) return 0;
+  const ema = (a, p) => {
+    if (a.length < p) return 0;
     const k = 2 / (p + 1);
-    let e = sma(arr.slice(0, p), p);
-    for (let i = p; i < arr.length; i++) e = arr[i] * k + e * (1 - k);
+    let e = sma(a.slice(0, p), p);
+    for (let i = p; i < a.length; i++) e = a[i] * k + e * (1 - k);
     return e;
   };
 
-  const rsi = (arr, p) => {
-    if (arr.length < p + 1) return 0;
+  const rsi = (a, p) => {
+    if (a.length < p + 1) return 0;
     let up = 0,
       dn = 0;
     for (let i = 1; i <= p; i++) {
-      const d = arr[i] - arr[i - 1];
+      const d = a[i] - a[i - 1];
       d >= 0 ? (up += d) : (dn -= d);
     }
     let avgUp = up / p,
       avgDn = dn / p;
-    for (let i = p + 1; i < arr.length; i++) {
-      const d = arr[i] - arr[i - 1];
+    for (let i = p + 1; i < a.length; i++) {
+      const d = a[i] - a[i - 1];
       avgUp = (avgUp * (p - 1) + Math.max(d, 0)) / p;
       avgDn = (avgDn * (p - 1) + Math.max(-d, 0)) / p;
     }
@@ -119,7 +118,9 @@ async function buildDashboardData() {
     return sma(tr, p);
   };
 
-  /* --------------------------- BLOCK A ------------------------------ */
+  /* ------------------------------------------------------------------ */
+  /* BLOCK A – trend / momentum / volatility (MACD hist kept)           */
+  /* ------------------------------------------------------------------ */
   for (const tf of ["15m", "1h", "4h", "1d"]) {
     try {
       const kl = await safeJson(
@@ -128,33 +129,33 @@ async function buildDashboardData() {
       const closes = kl.map((r) => +r[4]);
       const highs = kl.map((r) => +r[2]);
       const lows = kl.map((r) => +r[3]);
-      const last = closes.at(-1) || 1;
 
-      // trend & momentum
+      const last = closes.at(-1) || 1;
       const ema50 = ema(closes, 50);
       const ema200 = ema(closes, 200);
 
-      // MACD histogram (12‑26‑9 simplified)
       const macdArr = [];
       for (let i = 0; i < closes.length; i++) {
         const sub = closes.slice(0, i + 1);
         macdArr.push(ema(sub, 12) - ema(sub, 26));
       }
-      const macdH = macdArr.at(-1) - ema(macdArr, 9);
+      const macdL = macdArr.at(-1);
+      const macdS = ema(macdArr, 9);
+      const macdH = macdL - macdS;
 
       result.dataA[tf] = {
         ema50: +ema50.toFixed(2),
         ema200: +ema200.toFixed(2),
         rsi14: +rsi(closes, 14).toFixed(1),
         atrPct: +((atr(highs, lows, closes, 14) / last) * 100).toFixed(2),
-        macdHist: +macdH.toFixed(2),
+        macdH: +macdH.toFixed(2),
       };
     } catch (e) {
       result.errors.push(`A[${tf}]: ${e.message}`);
     }
   }
 
-  /* --------------------------- BLOCK B ------------------------------ */
+  /* ---------------- BLOCK B – 10‑bar & 20‑bar ROC ------------------- */
   for (const tf of ["15m", "1h", "4h", "1d"]) {
     try {
       const kl = await safeJson(
@@ -162,17 +163,14 @@ async function buildDashboardData() {
       );
       const closes = kl.map((r) => +r[4]);
       const roc10 = ((closes.at(-1) - closes.at(-11)) / closes.at(-11)) * 100;
-      const roc20 = ((closes.at(-1) - closes.at(-21)) / closes.at(-21)) * 100;
-      result.dataB[tf] = {
-        roc10: +roc10.toFixed(2),
-        roc20: +roc20.toFixed(2),
-      };
+      const roc20 = ((closes.at(-1) - closes[0]) / closes[0]) * 100;
+      result.dataB[tf] = { roc10: +roc10.toFixed(2), roc20: +roc20.toFixed(2) };
     } catch (e) {
       result.errors.push(`B[${tf}]: ${e.message}`);
     }
   }
 
-  /* --------------------------- BLOCK C ------------------------------ */
+  /* ---------------- BLOCK C – volume delta ------------------------- */
   try {
     const kl = await safeJson(
       `https://api.binance.com/api/v3/klines?symbol=${SYMBOL}&interval=1m&limit=1500`
@@ -197,7 +195,7 @@ async function buildDashboardData() {
     result.errors.push("C: " + e.message);
   }
 
-  /* --------------------------- BLOCK D ------------------------------ */
+  /* ---------------- BLOCK D – derivatives -------------------------- */
   try {
     const fr = await safeJson(
       `https://fapi.binance.com/fapi/v1/fundingRate?symbol=${SYMBOL}&limit=1000`
@@ -225,27 +223,83 @@ async function buildDashboardData() {
     result.errors.push(`D: ${e.message}`);
   }
 
-  /* --------------------------- BLOCK E ------------------------------ */
+  /* ---------------- BLOCK E – market structure --------------------- */
   try {
-    const fg = await safeJson(`https://api.alternative.me/fng/?limit=1`);
-    const fgd = fg.data?.[0];
+    /* 1) Daily pivots */
+    const dayK = await safeJson(
+      `https://api.binance.com/api/v3/klines?symbol=${SYMBOL}&interval=1d&limit=2`
+    );
+    const yHigh = +dayK[0][2];
+    const yLow = +dayK[0][3];
+    const yClose = +dayK[0][4];
+    const P = (yHigh + yLow + yClose) / 3;
+    const R1 = 2 * P - yLow;
+    const S1 = 2 * P - yHigh;
+
+    /* 2) Session VWAP ± 1σ */
+    const min1 = await safeJson(
+      `https://api.binance.com/api/v3/klines?symbol=${SYMBOL}&interval=1m&limit=1500`
+    );
+    const todayUTC0 = new Date(Date.UTC(
+      new Date().getUTCFullYear(),
+      new Date().getUTCMonth(),
+      new Date().getUTCDate()
+    )).getTime();
+    let pv = 0,
+      vol = 0,
+      prices = [];
+    for (const k of min1) {
+      if (+k[0] < todayUTC0) continue;
+      const tp = (+k[2] + +k[3] + +k[4]) / 3;
+      const v = +k[5];
+      pv += tp * v;
+      vol += v;
+      prices.push(tp);
+    }
+    const vwap = vol ? pv / vol : 0;
+    const mean = vwap;
+    const sd = prices.length
+      ? Math.sqrt(prices.reduce((s, x) => s + (x - mean) ** 2, 0) / prices.length)
+      : 0;
+
+    /* 3) HH/LL20 on 15m TF */
+    const kl20 = await safeJson(
+      `https://api.binance.com/api/v3/klines?symbol=${SYMBOL}&interval=15m&limit=20`
+    );
+    const closes20 = kl20.map((r) => +r[4]);
+    const HH20 = Math.max(...closes20);
+    const LL20 = Math.min(...closes20);
+
     result.dataE = {
-      fearGreed: `${fgd.value} · ${fgd.value_classification}`,
+      pivots: { P: +P.toFixed(2), R1: +R1.toFixed(2), S1: +S1.toFixed(2) },
+      vwap: { value: +vwap.toFixed(2), band1s: +sd.toFixed(2) },
+      hhll20: { HH20: +HH20.toFixed(2), LL20: +LL20.toFixed(2) },
     };
   } catch (e) {
     result.errors.push("E: " + e.message);
   }
 
-  /* --------------------------- BLOCK F ------------------------------ */
+  /* ---------------- BLOCK F – sentiment ---------------------------- */
   try {
-    const gv = await safeJson(`https://api.coingecko.com/api/v3/global`);
-    const g = gv.data.market_cap_percentage;
+    const fg = await safeJson(`https://api.alternative.me/fng/?limit=1`);
+    const fgd = fg.data?.[0];
     result.dataF = {
-      btcDominance: +g.btc.toFixed(2),
-      ethDominance: +g.eth.toFixed(2),
+      fearGreed: `${fgd.value} · ${fgd.value_classification}`,
     };
   } catch (e) {
     result.errors.push("F: " + e.message);
+  }
+
+  /* ---------------- BLOCK G – macro ------------------------------ */
+  try {
+    const gv = await safeJson(`https://api.coingecko.com/api/v3/global`);
+    const gd = gv.data;
+    result.dataG = {
+      btcDominance: +gd.market_cap_percentage.btc.toFixed(2),
+      ethDominance: +gd.market_cap_percentage.eth.toFixed(2),
+    };
+  } catch (e) {
+    result.errors.push("G: " + e.message);
   }
 
   return result;
