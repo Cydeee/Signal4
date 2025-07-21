@@ -243,47 +243,35 @@ async function buildDashboardData() {
   }
 
   /* ------------------------------------------------------------------ */
-/* BLOCK E – liquidations via CryptoMeter (handles new schema)        */
+/* BLOCK E – liquidations via Bybit v5 (no API key needed)            */
 /* ------------------------------------------------------------------ */
 try {
-  // keep fallback literal for local dev
-  const CM_KEY = Deno.env.get("CRYPTOMETER_KEY") ||
-                 "uBTYkSj3sDjsy1oSo3j52zg0D8614l7pLzpzTiFg";
-
-  const url = `https://api.cryptometer.io/liquidation-data-v2/` +
-              `?symbol=btc&api_key=${CM_KEY}`;
+  const url =
+    "https://api.bybit.com/v5/market/liquidation" +
+    "?category=linear&symbol=BTCUSDT&limit=1000";
 
   const body = await safeJson(url);
-  if (!body.success || !body.data) throw new Error("missing data");
+  if (body.retCode !== 0 || !body.result?.list)
+    throw new Error(`Bybit code ${body.retCode}`);
 
-  /* -------- accommodate both schemas ------------------------------ */
-  let longsUSD, shortsUSD;
+  const rows = body.result.list;              // array of forced orders
+  const now  = Date.now();
+  const inLast = (ms) => rows.filter(r => now - +r.ts <= ms);
 
-  if (Array.isArray(body.data)) {
-    // Legacy: data[0] is an exchange-map
-    const row = body.data[0];
-    const sum = side => Object.values(row).reduce((s,x)=>s+(+x[side]||0),0);
-    longsUSD  = sum("longs");
-    shortsUSD = sum("shorts");
-  } else {
-    // New: data is an object with longUsd / shortUsd totals
-    longsUSD  = +body.data.longUsd  || 0;
-    shortsUSD = +body.data.shortUsd || 0;
-  }
-
-  const totalUSD = longsUSD + shortsUSD;
+  const usd1h = inLast(3600e3).reduce((s,r)=> s + (+r.size || 0), 0);
+  const usd4h = inLast(4*3600e3).reduce((s,r)=> s + (+r.size || 0), 0);
 
   result.dataE = {
-    longs     : +longsUSD.toFixed(0),
-    shorts    : +shortsUSD.toFixed(0),
-    total24h  : +totalUSD.toFixed(0),
-    bias      : longsUSD > shortsUSD ? "long-wipe" : "short-wipe",
-    source    : "cryptometer"
+    usd1h : +usd1h.toFixed(0),
+    usd4h : +usd4h.toFixed(0),
+    spike : usd1h > 1.5 * (usd4h / 4),
+    source: "bybit"
   };
 } catch (e) {
   result.dataE = null;
   result.errors.push("E-liq: " + e.message);
 }
+
 
   /* ------------------------------------------------------------------ */
   /* BLOCK F – market structure --------------------------------------- */
