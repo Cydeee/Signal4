@@ -243,38 +243,47 @@ async function buildDashboardData() {
   }
 
   /* ------------------------------------------------------------------ */
-  /* BLOCK E – liquidations via CryptoMeter --------------------------- */
-  /* ------------------------------------------------------------------ */
-  try {
-    const CM_KEY =
-      Deno.env.get("CRYPTOMETER_KEY") ||
-      "uBTYkSj3sDjsy1oSo3j52zg0D8614l7pLzpzTiFg";
-    if (!CM_KEY) throw new Error("CRYPTOMETER_KEY env-var missing");
+/* BLOCK E – liquidations via CryptoMeter (handles new schema)        */
+/* ------------------------------------------------------------------ */
+try {
+  // keep fallback literal for local dev
+  const CM_KEY = Deno.env.get("CRYPTOMETER_KEY") ||
+                 "uBTYkSj3sDjsy1oSo3j52zg0D8614l7pLzpzTiFg";
 
-    const cmUrl = `https://api.cryptometer.io/liquidation-data-v2/?symbol=btc&api_key=${CM_KEY}`;
-    const body = await safeJson(cmUrl);
-    if (!body.success || !Array.isArray(body.data))
-      throw new Error("bad shape");
+  const url = `https://api.cryptometer.io/liquidation-data-v2/` +
+              `?symbol=btc&api_key=${CM_KEY}`;
 
-    const row = body.data[0]; // exchanges object
-    const sum = (side) =>
-      Object.values(row).reduce((s, ex) => s + (+ex[side] || 0), 0);
+  const body = await safeJson(url);
+  if (!body.success || !body.data) throw new Error("missing data");
 
-    const longs = sum("longs");
-    const shorts = sum("shorts");
-    const total = longs + shorts;
+  /* -------- accommodate both schemas ------------------------------ */
+  let longsUSD, shortsUSD;
 
-    result.dataE = {
-      longs: +longs.toFixed(0),
-      shorts: +shorts.toFixed(0),
-      total24h: +total.toFixed(0),
-      bias: longs > shorts ? "long-wipe" : "short-wipe",
-      source: "cryptometer",
-    };
-  } catch (e) {
-    result.dataE = null;
-    result.errors.push("E-liq: " + e.message);
+  if (Array.isArray(body.data)) {
+    // Legacy: data[0] is an exchange-map
+    const row = body.data[0];
+    const sum = side => Object.values(row).reduce((s,x)=>s+(+x[side]||0),0);
+    longsUSD  = sum("longs");
+    shortsUSD = sum("shorts");
+  } else {
+    // New: data is an object with longUsd / shortUsd totals
+    longsUSD  = +body.data.longUsd  || 0;
+    shortsUSD = +body.data.shortUsd || 0;
   }
+
+  const totalUSD = longsUSD + shortsUSD;
+
+  result.dataE = {
+    longs     : +longsUSD.toFixed(0),
+    shorts    : +shortsUSD.toFixed(0),
+    total24h  : +totalUSD.toFixed(0),
+    bias      : longsUSD > shortsUSD ? "long-wipe" : "short-wipe",
+    source    : "cryptometer"
+  };
+} catch (e) {
+  result.dataE = null;
+  result.errors.push("E-liq: " + e.message);
+}
 
   /* ------------------------------------------------------------------ */
   /* BLOCK F – market structure --------------------------------------- */
