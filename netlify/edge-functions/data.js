@@ -240,29 +240,46 @@ async function buildDashboardData() {
     result.errors.push(`D: ${e.message}`);
   }
 
-  /* ------------------------------------------------------------------ */
-  /* BLOCK E – liquidations (Coinglass 5-min buckets) ----------------- */
-  /* ------------------------------------------------------------------ */
-  try {
-    const COINGLASS = Deno.env.get("COINGLASS_KEY") || "66b799338eb84f36bed5a00f7d6e1257";
-    const liqJson = await safeJson(
-      "https://open-api.coinglass.com/public/v2/liquidation?symbol=BTC&type=futures&time_interval=5m",
-      { headers: { coinglassSecret: COINGLASS } }
-    );
-    const buckets = liqJson.data || [];
-    const last1h  = buckets.slice(-12);  // 12×5m = 1 h
-    const last4h  = buckets.slice(-48);  // 48×5m = 4 h
-    const sum = arr => arr.reduce((s,b)=> s + (+b.vol_usd || 0), 0);
-    const usd1h = sum(last1h);
-    const usd4h = sum(last4h);
-    result.dataE = {
-      usd1h:  +usd1h.toFixed(0),
-      usd4h:  +usd4h.toFixed(0),
-      spike:  usd1h > 1.5 * (usd4h / 4),
-    };
-  } catch (e) {
-    result.errors.push("E: " + e.message);
-  }
+/* ------------------------------------------------------------------ */
+/* BLOCK E – liquidations (Coinglass, 5-minute buckets)               */
+/* ------------------------------------------------------------------ */
+try {
+  const CG_KEY = Deno.env.get("COINGLASS_KEY");
+  if (!CG_KEY) throw new Error("COINGLASS_KEY env-var is missing");
+
+  const url =
+    "https://open-api.coinglass.com/public/v2/liquidation" +
+    "?symbol=BTC&type=futures&time_interval=5m";
+
+  const resp = await fetch(url, {
+    headers: {
+      coinglassSecret: CG_KEY,
+      accept: "application/json"
+    }
+  });
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+
+  const body = await resp.json();
+  if (body.code !== 0 || !Array.isArray(body.data))
+    throw new Error(`Coinglass error code ${body.code}`);
+
+  const buckets = body.data;
+  const slice1h = buckets.slice(-12);   // 12×5m = 1 h
+  const slice4h = buckets.slice(-48);   // 48×5m = 4 h
+  const sum = (arr) => arr.reduce((s, b) => s + (+b.vol_usd || 0), 0);
+
+  const usd1h = sum(slice1h);
+  const usd4h = sum(slice4h);
+
+  result.dataE = {
+    usd1h: +usd1h.toFixed(0),
+    usd4h: +usd4h.toFixed(0),
+    spike: usd1h > 1.5 * (usd4h / 4),
+  };
+} catch (e) {
+  result.dataE = null;                  // keep schema consistent
+  result.errors.push("E-liq: " + e.message);
+}
 
   /* ------------------------------------------------------------------ */
   /* BLOCK F – market structure --------------------------------------- */
